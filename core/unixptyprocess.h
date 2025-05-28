@@ -40,6 +40,7 @@ private:
 
 class UnixPtyProcess : public IPtyProcess
 {
+    Q_OBJECT
 public:
     UnixPtyProcess();
     virtual ~UnixPtyProcess();
@@ -47,13 +48,16 @@ public:
     virtual bool startProcess(const QString &shellPath, QStringList environment, qint16 cols, qint16 rows);
     virtual bool resize(qint16 cols, qint16 rows);
     virtual bool kill();
-    virtual PtyType type();
+    virtual PtyType type() const;
     virtual QString dumpDebugInfo();
     virtual QIODevice *notifier();
     virtual QByteArray readAll();
     virtual qint64 write(const QByteArray &byteArray);
     virtual bool isAvailable();
     void moveToThread(QThread *targetThread);
+
+private slots:
+    void onSocketActivated(int socket);
 
 private:
     ShellProcess m_shellProcess;

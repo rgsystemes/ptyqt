@@ -3,6 +3,7 @@
 
 #include "iptyprocess.h"
 #include "winpty.h"
+#include <QStringList>
 
 class WinPtyProcess : public IPtyProcess
 {
@@ -13,7 +14,7 @@ public:
     bool startProcess(const QString &shellPath, QStringList environment, qint16 cols, qint16 rows);
     bool resize(qint16 cols, qint16 rows);
     bool kill();
-    PtyType type();
+    PtyType type() const;
     QString dumpDebugInfo();
     QIODevice *notifier();
     QByteArray readAll();

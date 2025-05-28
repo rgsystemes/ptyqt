@@ -7,7 +7,67 @@
 #include <QMutexLocker>
 #include <QCoreApplication>
 
+GPA_WRAP(
+    Kernel32.dll,
+    InitializeProcThreadAttributeList,
+    (LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwAttributeCount, DWORD dwFlags, PSIZE_T lpSize),
+    (lpAttributeList, dwAttributeCount, dwFlags, lpSize),
+    WINAPI,
+    BOOL,
+    false
+);
+
+GPA_WRAP(
+    Kernel32.dll,
+    UpdateProcThreadAttribute,
+    (LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwFlags, DWORD_PTR Attribute, PVOID lpValue, SIZE_T cbSize, LPVOID lpPreviousValue, PSIZE_T lpReturnSize),
+    (lpAttributeList, dwFlags, Attribute, lpValue, cbSize, lpPreviousValue, lpReturnSize),
+    WINAPI,
+    BOOL,
+    false
+);
+
 #define READ_INTERVAL_MSEC 500
+
+#if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
+int getWindowsBuildNumber()
+{
+    typedef LONG(WINAPI *RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
+    HMODULE hModule = GetModuleHandleW(L"ntdll.dll");
+    if (hModule)
+    {
+        RtlGetVersionPtr rtlGetVersion = (RtlGetVersionPtr)GetProcAddress(hModule, "RtlGetVersion");
+        if (rtlGetVersion)
+        {
+            RTL_OSVERSIONINFOW osInfo = {0};
+            osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+            if (rtlGetVersion(&osInfo) == 0) // STATUS_SUCCESS
+            {
+                return osInfo.dwBuildNumber;
+            }
+        }
+    }
+    return -1; // Failed to retrieve build number
+}
+#endif // QT_VERSION < QT_VERSION_CHECK(5, 4, 0)
+
+void PtyBuffer::emitReadyRead()
+{
+    //for emit signal from PtyBuffer own thread
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
+    QTimer::singleShot(1, this, [this]()
+    {
+        emit readyRead();
+    });
+#else
+    QTimer::singleShot(1, this, SLOT(onReadyRead()));
+#endif // QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
+}
+
+void PtyBuffer::onReadyRead()
+{
+    emit readyRead();
+}
 
 HRESULT ConPtyProcess::createPseudoConsoleAndPipes(HPCON* phPC, HANDLE* phPipeIn, HANDLE* phPipeOut, qint16 cols, qint16 rows)
 {
@@ -45,7 +105,7 @@ HRESULT ConPtyProcess::initializeStartupInfoAttachedToPseudoConsole(STARTUPINFOE
         pStartupInfo->StartupInfo.cb = sizeof(STARTUPINFOEX);
 
         // Get the size of the thread attribute list.
-        InitializeProcThreadAttributeList(NULL, 1, 0, &attrListSize);
+        InitializeProcThreadAttributeListWrap(NULL, 1, 0, &attrListSize);
 
         // Allocate a thread attribute list of the correct size
         pStartupInfo->lpAttributeList =
@@ -53,10 +113,10 @@ HRESULT ConPtyProcess::initializeStartupInfoAttachedToPseudoConsole(STARTUPINFOE
 
         // Initialize thread attribute list
         if (pStartupInfo->lpAttributeList
-                && InitializeProcThreadAttributeList(pStartupInfo->lpAttributeList, 1, 0, &attrListSize))
+                && InitializeProcThreadAttributeListWrap(pStartupInfo->lpAttributeList, 1, 0, &attrListSize))
         {
             // Set Pseudo Console attribute
-            hr = UpdateProcThreadAttribute(
+            hr = UpdateProcThreadAttributeWrap(
                         pStartupInfo->lpAttributeList,
                         0,
                         PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
@@ -114,19 +174,7 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
     m_size = QPair<qint16, qint16>(cols, rows);
 
     //env
-    std::stringstream envBlock;
-    foreach (QString line, environment)
-    {
-        envBlock << line.toStdString() << '\0';
-    }
-    envBlock << '\0';
-    std::string env = envBlock.str();
-    auto envV = vectorFromString(env);
-    LPSTR envArg = envV.empty() ? nullptr : envV.data();
-
-    LPSTR cmdArg = new char[m_shellPath.toStdString().length() + 1];
-    std::strcpy(cmdArg, m_shellPath.toStdString().c_str());
-    //qDebug() << "m_shellPath" << m_shellPath << cmdArg << m_shellPath.toStdString().c_str();
+    Q_UNUSED(environment);
 
     HRESULT hr{ E_UNEXPECTED };
 
@@ -151,12 +199,12 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
     PROCESS_INFORMATION piClient{};
     hr = CreateProcess(
                 NULL,                           // No module name - use Command Line
-                cmdArg,                         // Command Line
+                (LPTSTR)shellPath.data(),       // Command Line
                 NULL,                           // Process handle not inheritable
                 NULL,                           // Thread handle not inheritable
                 FALSE,                          // Inherit handles
                 EXTENDED_STARTUPINFO_PRESENT,   // Creation flags
-                envArg, //NULL,                           // Use parent's environment block
+                NULL,                           // Use parent's environment block
                 NULL,                           // Use parent's starting directory
                 &startupInfo.StartupInfo,       // Pointer to STARTUPINFO
                 &piClient)                      // Pointer to PROCESS_INFORMATION
@@ -171,6 +219,7 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
     m_pid = piClient.dwProcessId;
 
     //this code runned in separate thread
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 10, 0))
     m_readThread = QThread::create([this, &piClient, &startupInfo]()
     {
         forever
@@ -203,9 +252,13 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
         CloseHandle(piClient.hProcess);
 
         // Cleanup attribute list
-        DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
+        DeleteProcThreadAttributeListWrap(startupInfo.lpAttributeList);
         //free(startupInfo.lpAttributeList);
     });
+#else
+    m_readThread = new ConPtyProcessThread(m_hPipeIn, &m_bufferMutex, &m_buffer, piClient, startupInfo, this);
+    connect(this, SIGNAL(requestInterruption()), m_readThread, SLOT(onInterruptionRequested()));
+#endif // QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
 
     //start read thread
     m_readThread->start();
@@ -238,8 +291,12 @@ bool ConPtyProcess::kill()
 
     if ( m_ptyHandler != INVALID_HANDLE_VALUE )
     {
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 2, 0))
         m_readThread->requestInterruption();
         QThread::msleep(200);
+#else
+        emit requestInterruption();
+#endif // QT_VERSION >= QT_VERSION_CHECK(5, 2, 0)
         m_readThread->quit();
         m_readThread->deleteLater();
         m_readThread = nullptr;
@@ -261,7 +318,7 @@ bool ConPtyProcess::kill()
     return exitCode;
 }
 
-IPtyProcess::PtyType ConPtyProcess::type()
+IPtyProcess::PtyType ConPtyProcess::type() const
 {
     return PtyType::ConPty;
 }
@@ -301,8 +358,13 @@ bool ConPtyProcess::isAvailable()
     return false; //very importnant! ConPty can be built, but it doesn't work if built with old sdk and Win10 < 1903
 #endif
 
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 4, 0))
     qint32 buildNumber = QSysInfo::kernelVersion().split(".").last().toInt();
     if (buildNumber < CONPTY_MINIMAL_WINDOWS_VERSION)
+#else
+    int buildNumber = getWindowsBuildNumber();
+    if (buildNumber == -1 || buildNumber < CONPTY_MINIMAL_WINDOWS_VERSION)
+#endif // QT_VERSION >= QT_VERSION_CHECK(5, 4, 0)
         return false;
     return m_winContext.init();
 }
@@ -310,4 +372,5 @@ bool ConPtyProcess::isAvailable()
 void ConPtyProcess::moveToThread(QThread *targetThread)
 {
     //nothing for now...
+    Q_UNUSED(targetThread);
 }

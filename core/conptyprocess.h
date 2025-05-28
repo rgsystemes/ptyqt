@@ -9,6 +9,19 @@
 #include <QMutex>
 #include <QTimer>
 #include <QThread>
+#include <QStringList>
+#include <QCoreApplication>
+
+#include "../lumwrap_win.h"
+GPA_WRAP(
+    Kernel32.dll,
+    DeleteProcThreadAttributeList,
+    (LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList),
+    (lpAttributeList),
+    WINAPI,
+    void,
+    void()
+);
 
 //Taken from the RS5 Windows SDK, but redefined here in case we're targeting <= 17733
 //Just for compile, ConPty doesn't work with Windows SDK < 17733
@@ -31,16 +44,16 @@ std::vector<T> vectorFromString(const std::basic_string<T> &str)
 class WindowsContext
 {
 public:
-    typedef HRESULT (*CreatePseudoConsolePtr)(
+    typedef HRESULT (WINAPI *CreatePseudoConsolePtr)(
             COORD size,         // ConPty Dimensions
             HANDLE hInput,      // ConPty Input
             HANDLE hOutput,	    // ConPty Output
             DWORD dwFlags,      // ConPty Flags
             HPCON* phPC);       // ConPty Reference
 
-    typedef HRESULT (*ResizePseudoConsolePtr)(HPCON hPC, COORD size);
+    typedef HRESULT (WINAPI *ResizePseudoConsolePtr)(HPCON hPC, COORD size);
 
-    typedef VOID (*ClosePseudoConsolePtr)(HPCON hPC);
+    typedef VOID (WINAPI *ClosePseudoConsolePtr)(HPCON hPC);
 
     WindowsContext()
         : createPseudoConsole(nullptr)
@@ -105,28 +118,92 @@ public:
     ~PtyBuffer() { }
 
     //just empty realization, we need only 'readyRead' signal of this class
-    qint64 readData(char *data, qint64 maxlen) { return 0; }
-    qint64 writeData(const char *data, qint64 len) { return 0; }
+    qint64 readData(char *data, qint64 maxlen) { Q_UNUSED(data); Q_UNUSED(maxlen); return 0; }
+    qint64 writeData(const char *data, qint64 len) { Q_UNUSED(data); Q_UNUSED(len); return 0; }
 
     bool   isSequential() { return true; }
     qint64 bytesAvailable() { return m_readBuffer.size(); }
     qint64 size() { return m_readBuffer.size(); }
 
-    void emitReadyRead()
+    void emitReadyRead();
+
+private slots:
+    void onReadyRead();
+
+public:
+    QByteArray m_readBuffer;
+};
+
+class ConPtyProcessThread : public QThread
+{
+    Q_OBJECT
+public:
+    ConPtyProcessThread(HANDLE hPipeIn, QMutex * bufferMutexPointer, PtyBuffer * bufferPointer, PROCESS_INFORMATION piClient, STARTUPINFOEX startupInfo, QObject * parent)
+        : QThread(parent),
+          m_hPipeIn(hPipeIn),
+          m_bufferMutexPointer(bufferMutexPointer),
+          m_bufferPointer(bufferPointer),
+          m_piClient(piClient),
+          m_startupInfo(startupInfo),
+          m_isInterruptionRequested(false)
     {
-        //for emit signal from PtyBuffer own thread
-        QTimer::singleShot(1, this, [this]()
+    }
+
+    void run()
+    {
+        forever
         {
-             emit readyRead();
-        });
+            //buffers
+            const DWORD BUFF_SIZE{ 512 };
+            char szBuffer[BUFF_SIZE]{};
+
+            //DWORD dwBytesWritten{};
+            DWORD dwBytesRead{};
+            BOOL fRead{ FALSE };
+
+            // Read from the pipe
+            fRead = ReadFile(m_hPipeIn, szBuffer, BUFF_SIZE, &dwBytesRead, NULL);
+
+            {
+                QMutexLocker locker(m_bufferMutexPointer);
+                m_bufferPointer->m_readBuffer.append(szBuffer, dwBytesRead);
+                m_bufferPointer->emitReadyRead();
+            }
+
+            if (m_isInterruptionRequested)
+                break;
+
+            QCoreApplication::processEvents();
+        }
+
+        // Now safe to clean-up client app's process-info & thread
+        CloseHandle(m_piClient.hThread);
+        CloseHandle(m_piClient.hProcess);
+
+        // Cleanup attribute list
+        DeleteProcThreadAttributeListWrap(m_startupInfo.lpAttributeList);
+        //free(startupInfo.lpAttributeList);
+    }
+
+private slots:
+    void onInterruptionRequested()
+    {
+        m_isInterruptionRequested = true;
+        msleep(200);
     }
 
 private:
-    QByteArray m_readBuffer;
+    HANDLE m_hPipeIn;
+    QMutex * m_bufferMutexPointer;
+    PtyBuffer * m_bufferPointer;
+    PROCESS_INFORMATION m_piClient;
+    STARTUPINFOEX m_startupInfo;
+    bool m_isInterruptionRequested;
 };
 
 class ConPtyProcess : public IPtyProcess
 {
+    Q_OBJECT
 public:
     ConPtyProcess();
     ~ConPtyProcess();
@@ -134,13 +211,16 @@ public:
     bool startProcess(const QString &shellPath, QStringList environment, qint16 cols, qint16 rows);
     bool resize(qint16 cols, qint16 rows);
     bool kill();
-    PtyType type();
+    PtyType type() const;
     QString dumpDebugInfo();
     virtual QIODevice *notifier();
     virtual QByteArray readAll();
     virtual qint64 write(const QByteArray &byteArray);
     bool isAvailable();
     void moveToThread(QThread *targetThread);
+
+signals:
+    void requestInterruption();
 
 private:
     HRESULT createPseudoConsoleAndPipes(HPCON* phPC, HANDLE* phPipeIn, HANDLE* phPipeOut, qint16 cols, qint16 rows);

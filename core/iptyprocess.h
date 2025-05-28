@@ -10,8 +10,9 @@
 
 #define CONPTY_MINIMAL_WINDOWS_VERSION 18309
 
-class IPtyProcess
+class IPtyProcess : public QObject
 {
+    Q_OBJECT
 public:
     enum PtyType
     {
@@ -30,7 +31,7 @@ public:
     virtual bool startProcess(const QString &shellPath, QStringList environment, qint16 cols, qint16 rows) = 0;
     virtual bool resize(qint16 cols, qint16 rows) = 0;
     virtual bool kill() = 0;
-    virtual PtyType type() = 0;
+    virtual PtyType type() const = 0;
     virtual QString dumpDebugInfo() = 0;
     virtual QIODevice *notifier() = 0;
     virtual QByteArray readAll() = 0;
@@ -41,6 +42,11 @@ public:
     QPair<qint16, qint16> size() { return m_size; }
     const QString lastError() { return m_lastError; }
     bool toggleTrace() { m_trace = !m_trace; return m_trace; }
+
+    inline uint qHash(const IPtyProcess & process)
+    {
+        return static_cast<int>(process.type());
+    }
 
 protected:
     QString m_shellPath;

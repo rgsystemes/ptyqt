@@ -56,9 +56,6 @@ bool WinPtyProcess::startProcess(const QString &shellPath, QStringList environme
 #ifdef PTYQT_DEBUG
     if (m_trace)
     {
-        environment.append(QString("%1=1").arg(DEBUG_VAR_LEGACY));
-        environment.append(QString("%1=trace").arg(DEBUG_VAR_ACTUAL));
-        environment.append(QString("%1=1").arg(SHOW_CONSOLE_VAR));
         SetEnvironmentVariable(DEBUG_VAR_LEGACY, "1");
         SetEnvironmentVariable(DEBUG_VAR_ACTUAL, "trace");
         SetEnvironmentVariable(SHOW_CONSOLE_VAR, "1");
@@ -66,12 +63,7 @@ bool WinPtyProcess::startProcess(const QString &shellPath, QStringList environme
 #endif
 
     //env
-    std::wstringstream envBlock;
-    foreach (QString line, environment)
-    {
-        envBlock << line.toStdWString() << L'\0';
-    }
-    std::wstring env = envBlock.str();
+    Q_UNUSED(environment);
 
     //create start config
     winpty_error_ptr_t errorPtr = nullptr;
@@ -103,7 +95,7 @@ bool WinPtyProcess::startProcess(const QString &shellPath, QStringList environme
     winpty_spawn_config_t* spawnConfig = winpty_spawn_config_new(WINPTY_SPAWN_FLAG_AUTO_SHUTDOWN, m_shellPath.toStdWString().c_str(),
                                                                  //commandLine.toStdWString().c_str(), cwd.toStdWString().c_str(),
                                                                  NULL, NULL,
-                                                                 env.c_str(),
+                                                                 NULL,
                                                                  &errorPtr);
 
     if (spawnConfig == nullptr)
@@ -199,7 +191,7 @@ bool WinPtyProcess::kill()
     return exitCode;
 }
 
-IPtyProcess::PtyType WinPtyProcess::type()
+IPtyProcess::PtyType WinPtyProcess::type() const
 {
     return PtyType::WinPty;
 }
@@ -233,13 +225,22 @@ qint64 WinPtyProcess::write(const QByteArray &byteArray)
 
 bool WinPtyProcess::isAvailable()
 {
-#ifdef PTYQT_BUILD_STATIC
-    return QFile::exists(QCoreApplication::applicationDirPath() + "/" + WINPTY_AGENT_NAME);
-#elif PTYQT_BUILD_DYNAMIC
-    return QFile::exists(QCoreApplication::applicationDirPath() + "/" + WINPTY_AGENT_NAME)
-            && QFile::exists(QCoreApplication::applicationDirPath() + "/" + WINPTY_DLL_NAME);
-#endif
+    QString path = QCoreApplication::applicationDirPath() + QLatin1String("/") + WINPTY_AGENT_NAME;
+    if (QFile::exists(path)) {
+        if (!QFile::remove(path)) {
+            return false;
+        }
+    }
 
+    if (!QFile::copy(QString::fromLatin1(":/") + WINPTY_AGENT_NAME, path)) {
+        return false;
+    }
+
+    if (!QFile(path).setPermissions(QFile::WriteOwner | QFile::WriteUser | QFile::WriteGroup | QFile::WriteOther)) {
+        return false;
+    }
+
+    return QFile::exists(path);
 }
 
 void WinPtyProcess::moveToThread(QThread *targetThread)
