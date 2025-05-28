@@ -1,5 +1,9 @@
 #include "unixptyprocess.h"
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
 #include <QStandardPaths>
+#else
+#include <QDir>
+#endif // QT_VERSION >= 5.0.0
 
 #include <termios.h>
 #include <errno.h>
@@ -17,7 +21,11 @@ UnixPtyProcess::UnixPtyProcess()
     : IPtyProcess()
     , m_readMasterNotify(0)
 {
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
     m_shellProcess.setWorkingDirectory(QStandardPaths::writableLocation(QStandardPaths::HomeLocation));
+#else
+    m_shellProcess.setWorkingDirectory(QDir::homePath());
+#endif // QT_VERSION >= 5.0.0
 }
 
 UnixPtyProcess::~UnixPtyProcess()
@@ -159,6 +167,7 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, QStringList environm
     m_readMasterNotify = new QSocketNotifier(m_shellProcess.m_handleMaster, QSocketNotifier::Read, &m_shellProcess);
     m_readMasterNotify->setEnabled(true);
     m_readMasterNotify->moveToThread(m_shellProcess.thread());
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
     QObject::connect(m_readMasterNotify, &QSocketNotifier::activated, [this](int socket)
     {
         Q_UNUSED(socket)
@@ -178,6 +187,9 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, QStringList environm
         m_shellReadBuffer.append(buffer);
         m_shellProcess.emitReadyRead();
     });
+#else
+    QObject::connect(m_readMasterNotify, SIGNAL(activated(int)), this, SLOT(onSocketActivated(int)));
+#endif
 
     QStringList defaultVars;
 
@@ -188,40 +200,51 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, QStringList environm
     defaultVars.append("LANG=en_US.UTF-8");
     defaultVars.append("LC_ALL=en_US.UTF-8");
     defaultVars.append("LC_CTYPE=UTF-8");
-    defaultVars.append("INIT_CWD=" + QCoreApplication::applicationDirPath());
     defaultVars.append("COMMAND_MODE=unix2003");
     defaultVars.append("COLORTERM=truecolor");
 
-    QStringList varNames;
-    foreach (QString line, environment)
-    {
-        varNames.append(line.split("=").first());
-    }
-
-    //append default env vars only if they don't exists in current env
-    foreach (QString defVar, defaultVars)
-    {
-        if (!varNames.contains(defVar.split("=").first()))
-            environment.append(defVar);
-    }
-
+    Q_UNUSED(environment);
     QProcessEnvironment envFormat;
-    foreach (QString line, environment)
+    foreach (QString line, defaultVars)
     {
         envFormat.insert(line.split("=").first(), line.split("=").last());
     }
-    m_shellProcess.setWorkingDirectory(QCoreApplication::applicationDirPath());
     m_shellProcess.setProcessEnvironment(envFormat);
     m_shellProcess.setReadChannel(QProcess::StandardOutput);
     m_shellProcess.start(m_shellPath, QStringList());
     m_shellProcess.waitForStarted();
 
+    #if (QT_VERSION >= QT_VERSION_CHECK(5, 3, 0))
     m_pid = m_shellProcess.processId();
+#else
+    m_pid = m_shellProcess.pid();
+#endif // QT_VERSION >= 5.3.0
 
     resize(cols, rows);
 
     return true;
 }
+
+#if (QT_VERSION < QT_VERSION_CHECK(5, 0, 0))
+void UnixPtyProcess::onSocketActivated(int socket)
+{
+    Q_UNUSED(socket)
+
+    QByteArray buffer;
+    int readSize = 1024;
+    QByteArray data;
+    do
+    {
+        char nativeBuffer[1025];
+        int len = ::read(m_shellProcess.m_handleMaster, nativeBuffer, readSize);
+        data = QByteArray(nativeBuffer, len);
+        buffer.append(data);
+    } while (data.size() == readSize); //last data block always < readSize
+
+    m_shellReadBuffer.append(buffer);
+    m_shellProcess.emitReadyRead();
+}
+#endif // QT_VERSION < 5.0.0
 
 bool UnixPtyProcess::resize(qint16 cols, qint16 rows)
 {
@@ -275,7 +298,7 @@ bool UnixPtyProcess::kill()
     return false;
 }
 
-IPtyProcess::PtyType UnixPtyProcess::type()
+IPtyProcess::PtyType UnixPtyProcess::type() const
 {
     return IPtyProcess::UnixPty;
 }
