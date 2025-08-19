@@ -61,7 +61,7 @@ IPtyProcess *PtyQt::createPtyProcess(IPtyProcess::PtyType ptyType)
     else
         return new WinPtyProcess();
 #   else
-    return NULL;
+        return NULL;
 #   endif
 #endif
 #ifdef Q_OS_UNIX
