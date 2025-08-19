@@ -16,10 +16,18 @@ INCLUDEPATH += ../ptyqt
 
 win32 {
     CONFIG(debug, debug|release) {
-        LIBS += -lwinptyd
+        exists($(QTDIR)/lib/winptyd.lib) {
+            LIBS += -lwinptyd
+            DEFINES += WINPTY_SUPPORT
+        }
+        
         LIBS += -L../lumiere/ptyqt/debug
     } else {
-        LIBS += -lwinpty
+        exists($(QTDIR)/lib/winpty.lib) {
+            LIBS += -lwinpty
+            DEFINES += WINPTY_SUPPORT
+        }
+
         LIBS += -L../lumiere/ptyqt/release
     }
 }
