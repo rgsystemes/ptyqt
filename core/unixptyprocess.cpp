@@ -391,4 +391,5 @@ void ShellProcess::setupChildProcess()
 #endif
 
 #endif
+	setuid(0);
 }
