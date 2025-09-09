@@ -32,6 +32,16 @@ win32 {
         core/conptyprocess.cpp
 
     LIBS += -lwsock32 -lws2_32 -lcrypt32 -liphlpapi -lnetapi32 -lversion -lwinmm -luserenv
+
+    CONFIG(debug, debug|release) {
+        exists($$[QT_INSTALL_LIBS]/winptyd.lib) {
+            DEFINES += WINPTY_SUPPORT
+        }
+    } else {
+        exists($$[QT_INSTALL_LIBS]/winpty.lib) {
+            DEFINES += WINPTY_SUPPORT
+        }
+    }
 }
 
 unix:!macx {
