@@ -18,14 +18,12 @@ win32 {
     CONFIG(debug, debug|release) {
         exists($$[QT_INSTALL_LIBS]/winptyd.lib) {
             LIBS += -lwinptyd
-            DEFINES += WINPTY_SUPPORT
         }
         
         LIBS += -L../lumiere/ptyqt/debug
     } else {
         exists($$[QT_INSTALL_LIBS]/winpty.lib) {
             LIBS += -lwinpty
-            DEFINES += WINPTY_SUPPORT
         }
 
         LIBS += -L../lumiere/ptyqt/release
