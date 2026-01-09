@@ -2,7 +2,7 @@ CMakeCache.txt
 CMakeFiles
 CMakeScripts
 Testing
-Makefile
+Makefile*
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json
@@ -299,7 +299,7 @@ CTestTestfile.cmake
 /examples/xtermjs/package-lock.json
 /include/iptyprocess.h
 /include/ptyqt.h
-/lib/ptyqt.lib
+ptyqt.lib
 build_android/
 moc_*.cpp
 *.o
