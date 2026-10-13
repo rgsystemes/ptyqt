@@ -23,6 +23,10 @@ public:
         , m_handleSlave(-1)
     {
         setProcessChannelMode(QProcess::SeparateChannels);
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+        // QProcess::setupChildProcess() has been replaced by a modifier in Qt 6
+        setChildProcessModifier([this]() { setupPtyChildProcess(); });
+#endif // QT_VERSION >= 6.0.0
     }
 
     void emitReadyRead()
@@ -31,7 +35,12 @@ public:
     }
 
 protected:
-    virtual void setupChildProcess();
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+    void setupPtyChildProcess();
+#else
+    virtual void setupChildProcess() { setupPtyChildProcess(); }
+    void setupPtyChildProcess();
+#endif // QT_VERSION >= 6.0.0
 
 private:
     int m_handleMaster, m_handleSlave;
@@ -56,8 +65,10 @@ public:
     virtual bool isAvailable();
     void moveToThread(QThread *targetThread);
 
+#if (QT_VERSION < QT_VERSION_CHECK(5, 0, 0))
 private slots:
     void onSocketActivated(int socket);
+#endif // QT_VERSION < 5.0.0
 
 private:
     ShellProcess m_shellProcess;

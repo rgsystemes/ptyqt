@@ -220,7 +220,9 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
 
     //this code runned in separate thread
 #if (QT_VERSION >= QT_VERSION_CHECK(5, 10, 0))
-    m_readThread = QThread::create([this, &piClient, &startupInfo]()
+    // piClient and startupInfo are locals of this function: the thread must keep its own copies
+    // (like ConPtyProcessThread does), they are used when it ends
+    m_readThread = QThread::create([this, piClient, startupInfo]()
     {
         forever
         {

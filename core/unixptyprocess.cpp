@@ -173,12 +173,11 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, QStringList environm
         Q_UNUSED(socket)
 
         QByteArray buffer;
-        int size = 1025;
         int readSize = 1024;
         QByteArray data;
         do
         {
-            char nativeBuffer[size];
+            char nativeBuffer[1025];
             int len = ::read(m_shellProcess.m_handleMaster, nativeBuffer, readSize);
             data = QByteArray(nativeBuffer, len);
             buffer.append(data);
@@ -288,7 +287,7 @@ bool UnixPtyProcess::kill()
 
         if (m_shellProcess.state() == QProcess::Running)
         {
-            QProcess::startDetached( QString("kill -9 %1").arg( pid() ) );
+            QProcess::startDetached( QString("kill"), QStringList() << QString("-9") << QString::number( pid() ) );
             m_shellProcess.kill();
             m_shellProcess.waitForFinished(1000);
         }
@@ -346,7 +345,7 @@ void UnixPtyProcess::moveToThread(QThread *targetThread)
     m_shellProcess.moveToThread(targetThread);
 }
 
-void ShellProcess::setupChildProcess()
+void ShellProcess::setupPtyChildProcess()
 {
     dup2(m_handleSlave, STDIN_FILENO);
     dup2(m_handleSlave, STDOUT_FILENO);
@@ -367,7 +366,8 @@ void ShellProcess::setupChildProcess()
     if (device.startsWith("/dev/"))
         device = device.mid(5);
 
-    const char *d = device.toLatin1().constData();
+    const QByteArray deviceName = device.toLatin1();
+    const char *d = deviceName.constData();
 
     strncpy(utmpxInfo.ut_line, d, sizeof(utmpxInfo.ut_line));
 
