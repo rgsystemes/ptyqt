@@ -81,13 +81,13 @@ HRESULT ConPtyProcess::createPseudoConsoleAndPipes(HPCON* phPC, HANDLE* phPipeIn
     {
         // Create the Pseudo Console of the required size, attached to the PTY-end of the pipes
         hr = m_winContext.createPseudoConsole({cols, rows}, hPipePTYIn, hPipePTYOut, 0, phPC);
-
-        // Note: We can close the handles to the PTY-end of the pipes here
-        // because the handles are dup'ed into the ConHost and will be released
-        // when the ConPTY is destroyed.
-        if (INVALID_HANDLE_VALUE != hPipePTYOut) CloseHandle(hPipePTYOut);
-        if (INVALID_HANDLE_VALUE != hPipePTYIn) CloseHandle(hPipePTYIn);
     }
+
+    // Note: We can close the handles to the PTY-end of the pipes here
+    // because the handles are dup'ed into the ConHost and will be released
+    // when the ConPTY is destroyed.
+    if (INVALID_HANDLE_VALUE != hPipePTYOut) CloseHandle(hPipePTYOut);
+    if (INVALID_HANDLE_VALUE != hPipePTYIn) CloseHandle(hPipePTYIn);
 
     return hr;
 }
@@ -184,6 +184,9 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
     if (S_OK != hr)
     {
         m_lastError = QString("ConPty Error: CreatePseudoConsoleAndPipes fail");
+        // No pseudo console was created, whatever CreatePseudoConsole left in the handle
+        m_ptyHandler = INVALID_HANDLE_VALUE;
+        closePseudoConsoleAndPipes();
         return false;
     }
 
@@ -192,6 +195,8 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
     if (S_OK != initializeStartupInfoAttachedToPseudoConsole(&startupInfo, m_ptyHandler))
     {
         m_lastError = QString("ConPty Error: InitializeStartupInfoAttachedToPseudoConsole fail");
+        free(startupInfo.lpAttributeList);
+        closePseudoConsoleAndPipes();
         return false;
     }
 
@@ -214,6 +219,9 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
     if (S_OK != hr)
     {
         m_lastError = QString("ConPty Error: Cannot create process -> %1").arg(hr);
+        DeleteProcThreadAttributeListWrap(startupInfo.lpAttributeList);
+        free(startupInfo.lpAttributeList);
+        closePseudoConsoleAndPipes();
         return false;
     }
     m_pid = piClient.dwProcessId;
@@ -237,6 +245,10 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
             // Read from the pipe
             fRead = ReadFile(m_hPipeIn, szBuffer, BUFF_SIZE, &dwBytesRead, NULL);
 
+            // Fails once the pseudo console is closed
+            if (!fRead)
+                break;
+
             {
                 QMutexLocker locker(&m_bufferMutex);
                 m_buffer.m_readBuffer.append(szBuffer, dwBytesRead);
@@ -255,7 +267,7 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
 
         // Cleanup attribute list
         DeleteProcThreadAttributeListWrap(startupInfo.lpAttributeList);
-        //free(startupInfo.lpAttributeList);
+        free(startupInfo.lpAttributeList);
     });
 #else
     m_readThread = new ConPtyProcessThread(m_hPipeIn, &m_bufferMutex, &m_buffer, piClient, startupInfo, this);
@@ -293,31 +305,42 @@ bool ConPtyProcess::kill()
 
     if ( m_ptyHandler != INVALID_HANDLE_VALUE )
     {
-#if (QT_VERSION >= QT_VERSION_CHECK(5, 2, 0))
-        m_readThread->requestInterruption();
-        QThread::msleep(200);
-#else
-        emit requestInterruption();
-#endif // QT_VERSION >= QT_VERSION_CHECK(5, 2, 0)
-        m_readThread->quit();
-        m_readThread->deleteLater();
-        m_readThread = nullptr;
-
-        // Close ConPTY - this will terminate client process if running
+        // Close ConPTY first - this will terminate client process if running, and makes the read
+        // thread's ReadFile fail. The thread keeps draining the output pipe until then, which
+        // ClosePseudoConsole may wait for
         m_winContext.closePseudoConsole(m_ptyHandler);
-
-        // Clean-up the pipes
-        if (INVALID_HANDLE_VALUE != m_hPipeOut) CloseHandle(m_hPipeOut);
-        if (INVALID_HANDLE_VALUE != m_hPipeIn) CloseHandle(m_hPipeIn);
-        m_pid = 0;
         m_ptyHandler = INVALID_HANDLE_VALUE;
-        m_hPipeIn = INVALID_HANDLE_VALUE;
-        m_hPipeOut = INVALID_HANDLE_VALUE;
+
+        if (m_readThread)
+        {
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 2, 0))
+            m_readThread->requestInterruption();
+#else
+            emit requestInterruption();
+#endif // QT_VERSION >= QT_VERSION_CHECK(5, 2, 0)
+            // The thread uses the pipes and m_buffer: wait for it to end before releasing them
+            m_readThread->wait();
+            delete m_readThread;
+            m_readThread = nullptr;
+        }
+
+        closePseudoConsoleAndPipes();
+        m_pid = 0;
 
         exitCode = true;
     }
 
     return exitCode;
+}
+
+void ConPtyProcess::closePseudoConsoleAndPipes()
+{
+    if (INVALID_HANDLE_VALUE != m_ptyHandler) m_winContext.closePseudoConsole(m_ptyHandler);
+    if (INVALID_HANDLE_VALUE != m_hPipeOut) CloseHandle(m_hPipeOut);
+    if (INVALID_HANDLE_VALUE != m_hPipeIn) CloseHandle(m_hPipeIn);
+    m_ptyHandler = INVALID_HANDLE_VALUE;
+    m_hPipeIn = INVALID_HANDLE_VALUE;
+    m_hPipeOut = INVALID_HANDLE_VALUE;
 }
 
 IPtyProcess::PtyType ConPtyProcess::type() const
