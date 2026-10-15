@@ -1,8 +1,10 @@
 #ifndef IPTYPROCESS_H
 #define IPTYPROCESS_H
 
+#include <QObject>
 #include <QString>
 #include <QDebug>
+#include <QThread>
 
 #ifdef Q_OS_WIN
 #include <QLocalSocket>

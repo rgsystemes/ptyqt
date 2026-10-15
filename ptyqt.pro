@@ -81,7 +81,6 @@ macx {
         -framework SystemConfiguration
 }
 
-INCLUDEPATH += /usr/include /usr/local/include
 LIBS += -lpcre2-8 -lssl -lcrypto -lbz2 -lz -ldouble-conversion
 
 QT += core network
