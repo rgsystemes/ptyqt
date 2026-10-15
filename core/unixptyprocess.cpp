@@ -179,6 +179,8 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, QStringList environm
         {
             char nativeBuffer[1025];
             int len = ::read(m_shellProcess.m_handleMaster, nativeBuffer, readSize);
+            if (len <= 0)
+                break;
             data = QByteArray(nativeBuffer, len);
             buffer.append(data);
         } while (data.size() == readSize); //last data block always < readSize
@@ -236,6 +238,8 @@ void UnixPtyProcess::onSocketActivated(int socket)
     {
         char nativeBuffer[1025];
         int len = ::read(m_shellProcess.m_handleMaster, nativeBuffer, readSize);
+        if (len <= 0)
+            break;
         data = QByteArray(nativeBuffer, len);
         buffer.append(data);
     } while (data.size() == readSize); //last data block always < readSize
@@ -287,7 +291,6 @@ bool UnixPtyProcess::kill()
 
         if (m_shellProcess.state() == QProcess::Running)
         {
-            QProcess::startDetached( QString("kill"), QStringList() << QString("-9") << QString::number( pid() ) );
             m_shellProcess.kill();
             m_shellProcess.waitForFinished(1000);
         }

@@ -35,12 +35,12 @@ public:
     }
 
 protected:
-#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
     void setupPtyChildProcess();
-#else
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)) && (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
+    virtual void setupChildProcess() Q_DECL_OVERRIDE { setupPtyChildProcess(); }
+#elif (QT_VERSION < QT_VERSION_CHECK(5, 0, 0))
     virtual void setupChildProcess() { setupPtyChildProcess(); }
-    void setupPtyChildProcess();
-#endif // QT_VERSION >= 6.0.0
+#endif
 
 private:
     int m_handleMaster, m_handleSlave;
