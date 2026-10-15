@@ -164,6 +164,10 @@ public:
             // Read from the pipe
             fRead = ReadFile(m_hPipeIn, szBuffer, BUFF_SIZE, &dwBytesRead, NULL);
 
+            // Fails once the pseudo console is closed
+            if (!fRead)
+                break;
+
             {
                 QMutexLocker locker(m_bufferMutexPointer);
                 m_bufferPointer->m_readBuffer.append(szBuffer, dwBytesRead);
@@ -182,7 +186,7 @@ public:
 
         // Cleanup attribute list
         DeleteProcThreadAttributeListWrap(m_startupInfo.lpAttributeList);
-        //free(startupInfo.lpAttributeList);
+        free(m_startupInfo.lpAttributeList);
     }
 
 private slots:
@@ -225,6 +229,7 @@ signals:
 private:
     HRESULT createPseudoConsoleAndPipes(HPCON* phPC, HANDLE* phPipeIn, HANDLE* phPipeOut, qint16 cols, qint16 rows);
     HRESULT initializeStartupInfoAttachedToPseudoConsole(STARTUPINFOEX* pStartupInfo, HPCON hPC);
+    void closePseudoConsoleAndPipes();
 
 private:
     WindowsContext m_winContext;

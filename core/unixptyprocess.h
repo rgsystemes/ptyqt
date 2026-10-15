@@ -71,6 +71,9 @@ private slots:
 #endif // QT_VERSION < 5.0.0
 
 private:
+    void readFromMaster();
+    void writeUtmpxRecord();
+
     ShellProcess m_shellProcess;
     QSocketNotifier *m_readMasterNotify;
     QByteArray m_shellReadBuffer;
