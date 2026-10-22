@@ -210,6 +210,14 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, QStringList environm
 
     resize(cols, rows);
 
+    // The shell has its own copies of the slave now. Closing ours makes read() on the master
+    // fail with EIO once the shell (and whatever it started) has exited, instead of blocking
+    if (m_shellProcess.state() == QProcess::Running)
+    {
+        ::close(m_shellProcess.m_handleSlave);
+        m_shellProcess.m_handleSlave = -1;
+    }
+
     return true;
 }
 
@@ -229,7 +237,8 @@ void UnixPtyProcess::readFromMaster()
     ssize_t len = ::read(m_shellProcess.m_handleMaster, buffer, sizeof(buffer));
     if (len <= 0)
     {
-        // EOF, or EIO once the shell has closed the slave: stop the notifier, it would fire again and again
+        // EOF, or EIO once every slave fd is closed (the shell has exited): stop the notifier,
+        // it would fire again and again
         if (len == 0 || (errno != EINTR && errno != EAGAIN))
             m_readMasterNotify->setEnabled(false);
         return;
@@ -285,7 +294,8 @@ bool UnixPtyProcess::resize(qint16 cols, qint16 rows)
     winp.ws_xpixel = 0;
     winp.ws_ypixel = 0;
 
-    bool res =  ( (ioctl(m_shellProcess.m_handleMaster, TIOCSWINSZ, &winp) != -1) && (ioctl(m_shellProcess.m_handleSlave, TIOCSWINSZ, &winp) != -1) );
+    // Setting the size on the master applies it to the terminal (the slave is closed once the shell has started)
+    bool res = (ioctl(m_shellProcess.m_handleMaster, TIOCSWINSZ, &winp) != -1);
 
     if (res)
     {

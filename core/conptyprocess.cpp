@@ -27,7 +27,18 @@ GPA_WRAP(
     false
 );
 
+GPA_WRAP(
+    Kernel32.dll,
+    CancelSynchronousIo,
+    (HANDLE hThread),
+    (hThread),
+    WINAPI,
+    BOOL,
+    false
+);
+
 #define READ_INTERVAL_MSEC 500
+#define READ_THREAD_WAIT_MSEC 2000
 
 #if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
 int getWindowsBuildNumber()
@@ -141,6 +152,7 @@ ConPtyProcess::ConPtyProcess()
     , m_hPipeIn { INVALID_HANDLE_VALUE }
     , m_hPipeOut { INVALID_HANDLE_VALUE }
     , m_readThread(nullptr)
+    , m_readThreadId(0)
 {
 
 }
@@ -232,6 +244,9 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
     // (like ConPtyProcessThread does), they are used when it ends
     m_readThread = QThread::create([this, piClient, startupInfo]()
     {
+        // kill() needs it to cancel a blocked ReadFile
+        m_readThreadId = GetCurrentThreadId();
+
         forever
         {
             //buffers
@@ -270,7 +285,7 @@ bool ConPtyProcess::startProcess(const QString &shellPath, QStringList environme
         free(startupInfo.lpAttributeList);
     });
 #else
-    m_readThread = new ConPtyProcessThread(m_hPipeIn, &m_bufferMutex, &m_buffer, piClient, startupInfo, this);
+    m_readThread = new ConPtyProcessThread(m_hPipeIn, &m_bufferMutex, &m_buffer, piClient, startupInfo, &m_readThreadId, this);
     connect(this, SIGNAL(requestInterruption()), m_readThread, SLOT(onInterruptionRequested()));
 #endif // QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
 
@@ -319,9 +334,24 @@ bool ConPtyProcess::kill()
             emit requestInterruption();
 #endif // QT_VERSION >= QT_VERSION_CHECK(5, 2, 0)
             // The thread uses the pipes and m_buffer: wait for it to end before releasing them
-            m_readThread->wait();
+            if (!m_readThread->wait(READ_THREAD_WAIT_MSEC))
+            {
+                // ReadFile still blocks, e.g. conhost outlived ClosePseudoConsole: cancel it rather
+                // than hang. Repeat in case the thread was not in ReadFile yet when it was cancelled
+                HANDLE hThread = NULL;
+                while (!m_readThread->wait(100))
+                {
+                    if (!hThread && m_readThreadId)
+                        hThread = OpenThread(THREAD_TERMINATE, FALSE, m_readThreadId);
+                    if (hThread)
+                        CancelSynchronousIoWrap(hThread);
+                }
+                if (hThread)
+                    CloseHandle(hThread);
+            }
             delete m_readThread;
             m_readThread = nullptr;
+            m_readThreadId = 0;
         }
 
         closePseudoConsoleAndPipes();

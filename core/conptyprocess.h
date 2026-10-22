@@ -138,19 +138,23 @@ class ConPtyProcessThread : public QThread
 {
     Q_OBJECT
 public:
-    ConPtyProcessThread(HANDLE hPipeIn, QMutex * bufferMutexPointer, PtyBuffer * bufferPointer, PROCESS_INFORMATION piClient, STARTUPINFOEX startupInfo, QObject * parent)
+    ConPtyProcessThread(HANDLE hPipeIn, QMutex * bufferMutexPointer, PtyBuffer * bufferPointer, PROCESS_INFORMATION piClient, STARTUPINFOEX startupInfo, volatile DWORD * threadIdPointer, QObject * parent)
         : QThread(parent),
           m_hPipeIn(hPipeIn),
           m_bufferMutexPointer(bufferMutexPointer),
           m_bufferPointer(bufferPointer),
           m_piClient(piClient),
           m_startupInfo(startupInfo),
+          m_threadIdPointer(threadIdPointer),
           m_isInterruptionRequested(false)
     {
     }
 
     void run()
     {
+        // ConPtyProcess::kill() needs it to cancel a blocked ReadFile
+        *m_threadIdPointer = GetCurrentThreadId();
+
         forever
         {
             //buffers
@@ -202,6 +206,7 @@ private:
     PtyBuffer * m_bufferPointer;
     PROCESS_INFORMATION m_piClient;
     STARTUPINFOEX m_startupInfo;
+    volatile DWORD * m_threadIdPointer;
     bool m_isInterruptionRequested;
 };
 
@@ -237,6 +242,8 @@ private:
     HANDLE m_hPipeIn, m_hPipeOut;
 
     QThread *m_readThread;
+    // Set by the read thread when it starts
+    volatile DWORD m_readThreadId;
     QMutex m_bufferMutex;
     PtyBuffer m_buffer;
 
