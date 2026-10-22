@@ -168,25 +168,9 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, QStringList environm
     m_readMasterNotify->setEnabled(true);
     m_readMasterNotify->moveToThread(m_shellProcess.thread());
 #if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
-    QObject::connect(m_readMasterNotify, &QSocketNotifier::activated, [this](int socket)
+    QObject::connect(m_readMasterNotify, &QSocketNotifier::activated, [this]()
     {
-        Q_UNUSED(socket)
-
-        QByteArray buffer;
-        int readSize = 1024;
-        QByteArray data;
-        do
-        {
-            char nativeBuffer[1025];
-            int len = ::read(m_shellProcess.m_handleMaster, nativeBuffer, readSize);
-            if (len <= 0)
-                break;
-            data = QByteArray(nativeBuffer, len);
-            buffer.append(data);
-        } while (data.size() == readSize); //last data block always < readSize
-
-        m_shellReadBuffer.append(buffer);
-        m_shellProcess.emitReadyRead();
+        readFromMaster();
     });
 #else
     QObject::connect(m_readMasterNotify, SIGNAL(activated(int)), this, SLOT(onSocketActivated(int)));
@@ -221,7 +205,18 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, QStringList environm
     m_pid = m_shellProcess.pid();
 #endif // QT_VERSION >= 5.3.0
 
+    if (m_pid > 0)
+        writeUtmpxRecord();
+
     resize(cols, rows);
+
+    // The shell has its own copies of the slave now. Closing ours makes read() on the master
+    // fail with EIO once the shell (and whatever it started) has exited, instead of blocking
+    if (m_shellProcess.state() == QProcess::Running)
+    {
+        ::close(m_shellProcess.m_handleSlave);
+        m_shellProcess.m_handleSlave = -1;
+    }
 
     return true;
 }
@@ -231,23 +226,65 @@ void UnixPtyProcess::onSocketActivated(int socket)
 {
     Q_UNUSED(socket)
 
-    QByteArray buffer;
-    int readSize = 1024;
-    QByteArray data;
-    do
-    {
-        char nativeBuffer[1025];
-        int len = ::read(m_shellProcess.m_handleMaster, nativeBuffer, readSize);
-        if (len <= 0)
-            break;
-        data = QByteArray(nativeBuffer, len);
-        buffer.append(data);
-    } while (data.size() == readSize); //last data block always < readSize
-
-    m_shellReadBuffer.append(buffer);
-    m_shellProcess.emitReadyRead();
+    readFromMaster();
 }
 #endif // QT_VERSION < 5.0.0
+
+void UnixPtyProcess::readFromMaster()
+{
+    // The master is blocking: read once per activation, the notifier fires again while data is pending
+    char buffer[4096];
+    ssize_t len = ::read(m_shellProcess.m_handleMaster, buffer, sizeof(buffer));
+    if (len <= 0)
+    {
+        // EOF, or EIO once every slave fd is closed (the shell has exited): stop the notifier,
+        // it would fire again and again
+        if (len == 0 || (errno != EINTR && errno != EAGAIN))
+            m_readMasterNotify->setEnabled(false);
+        return;
+    }
+
+    m_shellReadBuffer.append(buffer, len);
+    m_shellProcess.emitReadyRead();
+}
+
+void UnixPtyProcess::writeUtmpxRecord()
+{
+#if !defined(Q_OS_ANDROID) && !defined(Q_OS_FREEBSD)
+    // on Android imposible to put record to the 'utmp' file
+    // Written by the parent: the child process modifier runs between fork and exec,
+    // where neither Qt nor the utmpx functions are safe to call
+    struct utmpx utmpxInfo;
+    memset(&utmpxInfo, 0, sizeof(utmpxInfo));
+
+    strncpy(utmpxInfo.ut_user, qgetenv("USER").constData(), sizeof(utmpxInfo.ut_user));
+
+    QString device(m_shellProcess.m_handleSlaveName);
+    if (device.startsWith("/dev/"))
+        device = device.mid(5);
+
+    const QByteArray deviceName = device.toLatin1();
+    const char *d = deviceName.constData();
+
+    strncpy(utmpxInfo.ut_line, d, sizeof(utmpxInfo.ut_line));
+
+    if (strlen(d) >= sizeof(utmpxInfo.ut_id))
+        strncpy(utmpxInfo.ut_id, d + strlen(d) - sizeof(utmpxInfo.ut_id), sizeof(utmpxInfo.ut_id));
+
+    struct timeval tv;
+    gettimeofday(&tv, 0);
+    utmpxInfo.ut_tv.tv_sec = tv.tv_sec;
+    utmpxInfo.ut_tv.tv_usec = tv.tv_usec;
+
+    utmpxInfo.ut_type = USER_PROCESS;
+    utmpxInfo.ut_pid = static_cast<pid_t>(m_pid);
+
+    utmpxname(_PATH_UTMPX);
+    setutxent();
+    pututxline(&utmpxInfo);
+    endutxent();
+#endif
+}
 
 bool UnixPtyProcess::resize(qint16 cols, qint16 rows)
 {
@@ -257,7 +294,8 @@ bool UnixPtyProcess::resize(qint16 cols, qint16 rows)
     winp.ws_xpixel = 0;
     winp.ws_ypixel = 0;
 
-    bool res =  ( (ioctl(m_shellProcess.m_handleMaster, TIOCSWINSZ, &winp) != -1) && (ioctl(m_shellProcess.m_handleSlave, TIOCSWINSZ, &winp) != -1) );
+    // Setting the size on the master applies it to the terminal (the slave is closed once the shell has started)
+    bool res = (ioctl(m_shellProcess.m_handleMaster, TIOCSWINSZ, &winp) != -1);
 
     if (res)
     {
@@ -350,6 +388,7 @@ void UnixPtyProcess::moveToThread(QThread *targetThread)
 
 void ShellProcess::setupPtyChildProcess()
 {
+    // Runs between fork and exec: only async-signal-safe calls here
     dup2(m_handleSlave, STDIN_FILENO);
     dup2(m_handleSlave, STDOUT_FILENO);
     dup2(m_handleSlave, STDERR_FILENO);
@@ -358,41 +397,5 @@ void ShellProcess::setupPtyChildProcess()
     ioctl(m_handleSlave, TIOCSCTTY, 0);
     tcsetpgrp(m_handleSlave, sid);
 
-#if !defined(Q_OS_ANDROID) && !defined(Q_OS_FREEBSD)
-    // on Android imposible to put record to the 'utmp' file
-    struct utmpx utmpxInfo;
-    memset(&utmpxInfo, 0, sizeof(utmpxInfo));
-
-    strncpy(utmpxInfo.ut_user, qgetenv("USER"), sizeof(utmpxInfo.ut_user));
-
-    QString device(m_handleSlaveName);
-    if (device.startsWith("/dev/"))
-        device = device.mid(5);
-
-    const QByteArray deviceName = device.toLatin1();
-    const char *d = deviceName.constData();
-
-    strncpy(utmpxInfo.ut_line, d, sizeof(utmpxInfo.ut_line));
-
-    strncpy(utmpxInfo.ut_id, d + strlen(d) - sizeof(utmpxInfo.ut_id), sizeof(utmpxInfo.ut_id));
-
-    struct timeval tv;
-    gettimeofday(&tv, 0);
-    utmpxInfo.ut_tv.tv_sec = tv.tv_sec;
-    utmpxInfo.ut_tv.tv_usec = tv.tv_usec;
-
-    utmpxInfo.ut_type = USER_PROCESS;
-    utmpxInfo.ut_pid = getpid();
-
-    utmpxname(_PATH_UTMPX);
-    setutxent();
-    pututxline(&utmpxInfo);
-    endutxent();
-
-#if !defined(Q_OS_UNIX)
-    updwtmpx(_PATH_UTMPX, &loginInfo);
-#endif
-
-#endif
-	setuid(0);
+    setuid(0);
 }

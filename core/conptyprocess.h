@@ -138,19 +138,23 @@ class ConPtyProcessThread : public QThread
 {
     Q_OBJECT
 public:
-    ConPtyProcessThread(HANDLE hPipeIn, QMutex * bufferMutexPointer, PtyBuffer * bufferPointer, PROCESS_INFORMATION piClient, STARTUPINFOEX startupInfo, QObject * parent)
+    ConPtyProcessThread(HANDLE hPipeIn, QMutex * bufferMutexPointer, PtyBuffer * bufferPointer, PROCESS_INFORMATION piClient, STARTUPINFOEX startupInfo, volatile DWORD * threadIdPointer, QObject * parent)
         : QThread(parent),
           m_hPipeIn(hPipeIn),
           m_bufferMutexPointer(bufferMutexPointer),
           m_bufferPointer(bufferPointer),
           m_piClient(piClient),
           m_startupInfo(startupInfo),
+          m_threadIdPointer(threadIdPointer),
           m_isInterruptionRequested(false)
     {
     }
 
     void run()
     {
+        // ConPtyProcess::kill() needs it to cancel a blocked ReadFile
+        *m_threadIdPointer = GetCurrentThreadId();
+
         forever
         {
             //buffers
@@ -163,6 +167,10 @@ public:
 
             // Read from the pipe
             fRead = ReadFile(m_hPipeIn, szBuffer, BUFF_SIZE, &dwBytesRead, NULL);
+
+            // Fails once the pseudo console is closed
+            if (!fRead)
+                break;
 
             {
                 QMutexLocker locker(m_bufferMutexPointer);
@@ -182,7 +190,7 @@ public:
 
         // Cleanup attribute list
         DeleteProcThreadAttributeListWrap(m_startupInfo.lpAttributeList);
-        //free(startupInfo.lpAttributeList);
+        free(m_startupInfo.lpAttributeList);
     }
 
 private slots:
@@ -198,6 +206,7 @@ private:
     PtyBuffer * m_bufferPointer;
     PROCESS_INFORMATION m_piClient;
     STARTUPINFOEX m_startupInfo;
+    volatile DWORD * m_threadIdPointer;
     bool m_isInterruptionRequested;
 };
 
@@ -225,6 +234,7 @@ signals:
 private:
     HRESULT createPseudoConsoleAndPipes(HPCON* phPC, HANDLE* phPipeIn, HANDLE* phPipeOut, qint16 cols, qint16 rows);
     HRESULT initializeStartupInfoAttachedToPseudoConsole(STARTUPINFOEX* pStartupInfo, HPCON hPC);
+    void closePseudoConsoleAndPipes();
 
 private:
     WindowsContext m_winContext;
@@ -232,6 +242,8 @@ private:
     HANDLE m_hPipeIn, m_hPipeOut;
 
     QThread *m_readThread;
+    // Set by the read thread when it starts
+    volatile DWORD m_readThreadId;
     QMutex m_bufferMutex;
     PtyBuffer m_buffer;
 
